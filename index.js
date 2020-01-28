@@ -4,18 +4,14 @@ var mqtt    = require('mqtt');
 module.exports = function(homebridge) {
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
-  homebridge.registerAccessory("homebridge-mqtt-temperature", "mqtt-temperature", TemperatureAccessory);
+  homebridge.registerAccessory("homebridge-mqtt-temperatureAndHumidity", "mqtt-temperatureAndHumidity", TemperatureAndHumidityAccessory);
 }
 
-function TemperatureAccessory(log, config) {
+function TemperatureAndHumidityAccessory(log, config) {
   this.log = log;
   this.name = config["name"];
   this.url = config['url'];
   this.topic = config['topic'];
-  this.refresh_topic = config['refresh_topic'];
-  this.batt_topic = config['batt_topic'];
-  this.charge_topic = config['charge_topic'];
-  this.batt_low_perc = config['batt_low_perc'] || 20;
   this.client_Id = 'mqttjs_' + Math.random().toString(16).substr(2, 8);
   this.options = {
     keepalive: 10,
@@ -26,121 +22,58 @@ function TemperatureAccessory(log, config) {
 		reconnectPeriod: 1000,
 		connectTimeout: 30 * 1000,
     serialnumber: config["serial"] || this.client_Id,
-    max_temperature: config["maxTemperature"] || 100,
-    min_temperature: config["minTemperature"] || -50,
 		username: config["username"],
 		password: config["password"],
-		will: {
-			topic: 'WillMsg',
-			payload: 'Connection Closed abnormally..!',
-			qos: 0,
-			retain: false
-		},
 		rejectUnauthorized: false
     };
-    
-  this.service = new Service.TemperatureSensor(this.name);
 
-  this.service
+  this.temperatureService = new Service.TemperatureSensor(this.name);
+  this.humidityService = new Service.HumiditySensor(this.name);
+
+  this.temperatureService
     .getCharacteristic(Characteristic.CurrentTemperature)
-    .setProps({minValue: parseFloat(this.options["min_temperature"]),
-               maxValue: parseFloat(this.options["max_temperature"])})
-    .on('get', this.getState.bind(this));
+    .setProps({minValue: -10, maxValue: 50})
+    .on('get', this.getStateTemperature.bind(this));
+
+  this.humidityService
+    .getCharacteristic(Characteristic.CurrentRelativeHumidity)
+    .setProps({ minValue: 0, maxValue: 100 })
+    .on("get", this.getStateHumidity.bind(this));
 
   this.client  = mqtt.connect(this.url, this.options);
   this.client.subscribe(this.topic);
 
-  if (this.batt_topic) {
-      this.service.addCharacteristic(Characteristic.BatteryLevel)
-      .on('get', this.getBattery.bind(this));
-  
-    this.service.addCharacteristic(Characteristic.StatusLowBattery)
-      .on('get', this.getLowBattery.bind(this));
-
-    this.client.subscribe(this.batt_topic);
-  }
-
-  if (this.charge_topic){
-    this.service.addCharacteristic(Characteristic.ChargingState)
-    .on('get', this.getChargingState.bind(this));
-
-    this.client.subscribe(this.charge_topic);
-  }
   var that = this;
-
-  //that.lowBattery = true;
-
   this.client.on('message', function (topic, message) {
-
     try {
       data = JSON.parse(message);
+      that.temperature = data.temperature; that.humidity = data.humidity;
     } catch (e) {
+      that.log.debug('mqtt message not understood:'+message.toString());
       return null;
     }
-    if (data === null) {return null}
-
-    data = parseFloat(data);
-    if ( !isNaN(data) ) {
-
-      if (topic === that.topic) { 
-        that.temperature = data;
-        that.log.debug('Sending MQTT.Temperature: ' + that.temperature);
-        that.service
-          .getCharacteristic(Characteristic.CurrentTemperature).updateValue(that.temperature);
-      }
-      if (that.batt_topic) {
-        if (topic === that.batt_topic) { 
-          that.battery = data;
-          that.log.debug('Sending MQTT.Battery: ' + that.battery);
-          that.service
-            .getCharacteristic(Characteristic.BatteryLevel).updateValue(that.battery);
-          
-          (data <= that.batt_low_perc) ? that.lowBattery = true : that.lowBattery = false;
-
-          that.service
-            .getCharacteristic(Characteristic.StatusLowBattery).updateValue(that.lowBattery);          
-        }
-      }
-      if (topic == that.charge_topic){
-        that.chargingState = data;
-        that.log.debug('Sending MQTT.BattChargingState: ' + that.chargingState);
-        that.service
-          .getCharacteristic(Characteristic.ChargingState).updateValue(that.chargingState);
-      }
-    }
+    that.temperatureService
+      .getCharacteristic(Characteristic.CurrentTemperature).updateValue(that.temperature);
+    that.humidityService
+      .getCharacteristic(Characteristic.CurrentRelativeHumidity).updateValue(that.humidity);
   });
-
 }
 
-TemperatureAccessory.prototype.getState = function(callback) {
+
+TemperatureAndHumidityAccessory.prototype.getStateTemperature = function(callback) {
   this.log.debug("Get Temperature Called: " + this.temperature);
-  
-  if(!this.refresh_topic) {
-    callback(null, this.temperature);
-    return;
-  }
-
-  // request the temperature from the sensor
-  this.client.publish(this.refresh_topic, null, null, function(error, packet) {
-    callback(null, this.temperature);
-  })
+  callback(null, this.temperature);
+  return;
 }
 
-TemperatureAccessory.prototype.getBattery = function(callback) {
-  this.log.debug("Get Battery Called: " + this.battery);
-  callback(null, this.battery);
-}
-TemperatureAccessory.prototype.getLowBattery = function(callback) {
-  this.log.debug("Get Low Battery Status: " + this.lowBattery);
-  callback(null, this.lowBattery);
+TemperatureAndHumidityAccessory.prototype.getStateHumidity = function(callback) {
+  this.log.debug("Get Humidity Called: " + this.humidity);
+  callback(null, this.humidity);
+  return;
 }
 
-TemperatureAccessory.prototype.getChargingState = function(callback) {
-  this.log.debug("Get Charging Status: " + this.chargingState);
-  callback(null, this.chargingState);
-}
 
-TemperatureAccessory.prototype.getServices = function() {
+TemperatureAndHumidityAccessory.prototype.getServices = function() {
   // you can OPTIONALLY create an information service if you wish to override
   // the default values for things like serial number, model, etc.
 
@@ -150,5 +83,5 @@ TemperatureAccessory.prototype.getServices = function() {
     .setCharacteristic(Characteristic.Model, "MQTT Temperature")
     .setCharacteristic(Characteristic.SerialNumber, this.options["serialnumber"]);
 
-  return [informationService, this.service];
+  return [informationService, this.temperatureService, this.humidityService];
 }
